@@ -88,6 +88,11 @@ func (h *Handler) Get(c droplet.Context) (interface{}, error) {
 
 	upstream := r.(*entity.Upstream)
 	upstream.Nodes = entity.NodesFormat(upstream.Nodes)
+	//check creator
+	loginUser := c.Get("LoginUser")
+	if err := ValidateCreator(loginUser.(string), upstream); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+	}
 
 	return r, nil
 }
@@ -134,8 +139,20 @@ type ListInput struct {
 func (h *Handler) List(c droplet.Context) (interface{}, error) {
 	input := c.Input().(*ListInput)
 
+	//validate Creator
+	loginUser := c.Get("LoginUser")
+	creatorLabel := "API_CREATOR:" + loginUser.(string)
+	creatorLabelMap, err := utils.GenLabelMap(creatorLabel)
+	if err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest},
+			fmt.Errorf("%s: \"%s\"", err.Error(), creatorLabel)
+	}
+
 	ret, err := h.upstreamStore.List(c.Context(), store.ListInput{
 		Predicate: func(obj interface{}) bool {
+			if loginUser.(string) != "admin" && !utils.LabelContains(obj.(*entity.Upstream).Labels, creatorLabelMap) {
+				return false
+			}
 			if input.Name != "" {
 				return strings.Contains(obj.(*entity.Upstream).Name, input.Name)
 			}
@@ -165,6 +182,28 @@ func (h *Handler) Create(c droplet.Context) (interface{}, error) {
 		return ret, err
 	}
 
+	// check creator in Labels: API_CREATOR is default label, and it is current user
+	if input.Labels != nil {
+		labelMap, err := utils.GenLabelMap("API_CREATOR")
+		if err != nil {
+			return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest},
+				fmt.Errorf("%s: \"%s\"", err.Error(), "API_CREATOR")
+		}
+
+		if utils.LabelContains(input.Labels, labelMap) {
+			return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest},
+				fmt.Errorf("API_CREATOR is the default label key, please change it")
+		}
+	}
+	loginUser := c.Get("LoginUser")
+	if input.Labels == nil {
+		input.Labels = map[string]string{
+			"API_CREATOR": loginUser.(string),
+		}
+	} else {
+		input.Labels["API_CREATOR"] = loginUser.(string)
+	}
+
 	// create
 	res, err := h.upstreamStore.Create(c.Context(), input)
 	if err != nil {
@@ -191,6 +230,33 @@ func (h *Handler) Update(c droplet.Context) (interface{}, error) {
 		input.Upstream.ID = input.ID
 	}
 
+	// check creator in Labels
+	loginUser := c.Get("LoginUser")
+	store, err := h.upstreamStore.Get(c.Context(), input.ID)
+	if err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest}, err
+	}
+
+	if err := ValidateCreator(loginUser.(string), store.(*entity.Upstream)); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+	}
+
+	_upstream := store.(*entity.Upstream)
+	label, ok := _upstream.Labels["API_CREATOR"]
+	_, _ok := input.Upstream.Labels["API_CREATOR"]
+	if input.Upstream.Labels == nil {
+		input.Upstream.Labels = map[string]string{}
+	} else if _ok {
+		input.Upstream.Labels["API_CREATOR"] = label
+	}
+	if ok {
+		if loginUser != "admin" {
+			input.Upstream.Labels["API_CREATOR"] = loginUser.(string)
+		} else if loginUser == "admin" {
+			input.Upstream.Labels["API_CREATOR"] = label
+		}
+	}
+
 	// check name existed
 	ret, err := handler.NameExistCheck(c.Context(), h.upstreamStore, "upstream", input.Name, input.ID)
 	if err != nil {
@@ -211,6 +277,16 @@ type BatchDelete struct {
 
 func (h *Handler) BatchDelete(c droplet.Context) (interface{}, error) {
 	input := c.Input().(*BatchDelete)
+
+	loginUser := c.Get("LoginUser")
+	route, err := h.upstreamStore.Get(c.Context(), input.IDs)
+	if err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest}, err
+	}
+
+	if err := ValidateCreator(loginUser.(string), route.(*entity.Upstream)); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+	}
 
 	ids := strings.Split(input.IDs, ",")
 	mp := make(map[string]struct{})
@@ -284,6 +360,11 @@ func (h *Handler) Patch(c droplet.Context) (interface{}, error) {
 		return handler.SpecCodeResponse(err), err
 	}
 
+	loginUser := c.Get("LoginUser")
+	if err := ValidateCreator(loginUser.(string), stored.(*entity.Upstream)); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+	}
+
 	res, err := utils.MergePatch(stored, subPath, reqBody)
 
 	if err != nil {
@@ -293,6 +374,22 @@ func (h *Handler) Patch(c droplet.Context) (interface{}, error) {
 	var upstream entity.Upstream
 	if err := json.Unmarshal(res, &upstream); err != nil {
 		return handler.SpecCodeResponse(err), err
+	}
+
+	_upstream := stored.(*entity.Upstream)
+	label, ok := _upstream.Labels["API_CREATOR"]
+	_, _ok := upstream.Labels["API_CREATOR"]
+	if upstream.Labels == nil {
+		upstream.Labels = map[string]string{}
+	} else if _ok {
+		upstream.Labels["API_CREATOR"] = label
+	}
+	if ok {
+		if loginUser != "admin" {
+			upstream.Labels["API_CREATOR"] = loginUser.(string)
+		} else if loginUser == "admin" {
+			upstream.Labels["API_CREATOR"] = label
+		}
 	}
 
 	ret, err := h.upstreamStore.Update(c.Context(), &upstream, false)
@@ -363,4 +460,13 @@ func (h *Handler) listUpstreamNames(c droplet.Context) (interface{}, error) {
 	}
 
 	return output, nil
+}
+
+// validate: loginuser match with creator
+func ValidateCreator(loginUser string, upstream *entity.Upstream) error {
+	creator, _ := upstream.Labels["API_CREATOR"]
+	if loginUser != "admin" && loginUser != creator {
+		return fmt.Errorf("Permission denied: \"API_CREATOR:%s\" not match with login user %s", creator, loginUser)
+	}
+	return nil
 }

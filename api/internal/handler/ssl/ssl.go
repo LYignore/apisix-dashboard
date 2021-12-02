@@ -116,6 +116,12 @@ func (h *Handler) Get(c droplet.Context) (interface{}, error) {
 		return handler.SpecCodeResponse(err), err
 	}
 
+	loginUser := c.Get("LoginUser")
+	if err := ValidateCreator(loginUser.(string), ret.(*entity.SSL)); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+	}
+
+
 	//format respond
 	ssl := &entity.SSL{}
 	err = utils.ObjectClone(ret, ssl)
@@ -170,8 +176,20 @@ type ListInput struct {
 func (h *Handler) List(c droplet.Context) (interface{}, error) {
 	input := c.Input().(*ListInput)
 
+	//validate Creator
+	loginUser := c.Get("LoginUser")
+	creatorLabel := "API_CREATOR:" + loginUser.(string)
+	creatorLabelMap, err := utils.GenLabelMap(creatorLabel)
+	if err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest},
+			fmt.Errorf("%s: \"%s\"", err.Error(), creatorLabel)
+	}
+
 	ret, err := h.sslStore.List(c.Context(), store.ListInput{
 		Predicate: func(obj interface{}) bool {
+			if loginUser.(string) != "admin" && !utils.LabelContains(obj.(*entity.SSL).Labels, creatorLabelMap) {
+				return false
+			}
 			if input.SNI != "" {
 				if strings.Contains(obj.(*entity.SSL).Sni, input.SNI) {
 					return true
@@ -218,9 +236,32 @@ func (h *Handler) Create(c droplet.Context) (interface{}, error) {
 	}
 
 	ssl.ID = input.ID
-	ssl.Labels = input.Labels
+	//ssl.Labels = input.Labels
 	//set default value for SSL status, if not set, it will be 0 which means disable.
 	ssl.Status = conf.SSLDefaultStatus
+
+	// check creator in Labels: API_CREATOR is default label, and it is current user
+	if input.Labels != nil {
+		labelMap, err := utils.GenLabelMap("API_CREATOR")
+		if err != nil {
+			return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest},
+				fmt.Errorf("%s: \"%s\"", err.Error(), "API_CREATOR")
+		}
+
+		if utils.LabelContains(input.Labels, labelMap) {
+			return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest},
+				fmt.Errorf("API_CREATOR is the default label key, please change it")
+		}
+	}
+	loginUser := c.Get("LoginUser")
+	if input.Labels == nil {
+		ssl.Labels = map[string]string{
+			"API_CREATOR": loginUser.(string),
+		}
+	} else {
+		ssl.Labels["API_CREATOR"] = loginUser.(string)
+	}
+
 	ret, err := h.sslStore.Create(c.Context(), ssl)
 	if err != nil {
 		return handler.SpecCodeResponse(err), err
@@ -253,6 +294,33 @@ func (h *Handler) Update(c droplet.Context) (interface{}, error) {
 
 	if input.ID != "" {
 		ssl.ID = input.ID
+	}
+
+	// check creator in Labels
+	loginUser := c.Get("LoginUser")
+	r, err := h.sslStore.Get(c.Context(), input.ID)
+	if err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest}, err
+	}
+
+	if err := ValidateCreator(loginUser.(string), r.(*entity.SSL)); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+	}
+
+	_ssl := r.(*entity.SSL)
+	label, ok := _ssl.Labels["API_CREATOR"]
+	_, _ok := ssl.Labels["API_CREATOR"]
+	if ssl.Labels == nil {
+		ssl.Labels = map[string]string{}
+	} else if _ok {
+		ssl.Labels["API_CREATOR"] = label
+	}
+	if ok {
+		if loginUser != "admin" {
+			ssl.Labels["API_CREATOR"] = loginUser.(string)
+		} else if loginUser == "admin" {
+			ssl.Labels["API_CREATOR"] = label
+		}
 	}
 
 	if input.Labels != nil {
@@ -290,6 +358,11 @@ func (h *Handler) Patch(c droplet.Context) (interface{}, error) {
 		return handler.SpecCodeResponse(err), err
 	}
 
+	loginUser := c.Get("LoginUser")
+	if err := ValidateCreator(loginUser.(string), stored.(*entity.SSL)); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+	}
+
 	res, err := utils.MergePatch(stored, subPath, reqBody)
 	if err != nil {
 		return handler.SpecCodeResponse(err), err
@@ -299,6 +372,22 @@ func (h *Handler) Patch(c droplet.Context) (interface{}, error) {
 	err = json.Unmarshal(res, &ssl)
 	if err != nil {
 		return handler.SpecCodeResponse(err), err
+	}
+
+	_sslStored := stored.(*entity.SSL)
+	label, ok := _sslStored.Labels["API_CREATOR"]
+	_, _ok := ssl.Labels["API_CREATOR"]
+	if ssl.Labels == nil {
+		ssl.Labels = map[string]string{}
+	} else if _ok {
+		ssl.Labels["API_CREATOR"] = label
+	}
+	if ok {
+		if loginUser != "admin" {
+			ssl.Labels["API_CREATOR"] = loginUser.(string)
+		} else if loginUser == "admin" {
+			ssl.Labels["API_CREATOR"] = label
+		}
 	}
 
 	ret, err := h.sslStore.Update(c.Context(), &ssl, false)
@@ -319,6 +408,16 @@ type BatchDelete struct {
 
 func (h *Handler) BatchDelete(c droplet.Context) (interface{}, error) {
 	input := c.Input().(*BatchDelete)
+
+	loginUser := c.Get("LoginUser")
+	r, err := h.sslStore.Get(c.Context(), input.Ids)
+	if err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest}, err
+	}
+
+	if err := ValidateCreator(loginUser.(string), r.(*entity.SSL)); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+	}
 
 	if err := h.sslStore.BatchDelete(c.Context(), strings.Split(input.Ids, ",")); err != nil {
 		return handler.SpecCodeResponse(err), err
@@ -495,4 +594,13 @@ func (h *Handler) Exist(c droplet.Context) (interface{}, error) {
 	}
 
 	return nil, nil
+}
+
+// validate: loginuser match with creator
+func ValidateCreator(loginUser string, ssl *entity.SSL) error {
+	creator, _ := ssl.Labels["API_CREATOR"]
+	if loginUser != "admin" && loginUser != creator {
+		return fmt.Errorf("Permission denied: \"API_CREATOR:%s\" not match with login user %s", creator, loginUser)
+	}
+	return nil
 }

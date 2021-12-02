@@ -62,6 +62,8 @@ var (
 	PIDPath          = "/tmp/manager-api.pid"
 	AllowList        []string
 	Plugins          = map[string]bool{}
+	IamConf          = &IAMConf{}
+	PublicKeyConfig  publicKeyConfig
 )
 
 type MTLS struct {
@@ -128,6 +130,29 @@ type Config struct {
 	Conf           Conf
 	Authentication Authentication
 	Plugins        []string
+	IAMConf        IAMConf
+}
+
+type IAMConf struct {
+	WxIAMLoginURL     string `yaml:"WxIAMLoginURL"`
+	WxIAMLogoutURL    string `yaml:"WxIAMLogoutURL"`
+	WxIAMClientID     string `yaml:"WxIAMClientID"`
+	WxIAMClientSecret string `yaml:"WxIAMClientSecret"`
+	WxIAMKty          string `yaml:"WxIAMKty"`
+	WxIAMKid          string `yaml:"WxIAMKid"`
+	WxIAMAlg          string `yaml:"WxIAMAlg"`
+	WxIAMN            string `yaml:"WxIAMN"`
+	WxIAME            string `yaml:"WxIAME"`
+}
+
+type publicKeyConfig struct {
+	WxIAM struct {
+		Kty string
+		Kid string
+		Alg string
+		N   string
+		E   string
+	}
 }
 
 // TODO: we should no longer use init() function after remove all handler's integration tests
@@ -247,6 +272,38 @@ func setupConfig() {
 
 	// set plugin
 	initPlugins(config.Plugins)
+
+	initIAM(config.IAMConf)
+}
+
+func initIAM(conf IAMConf) {
+	if conf.WxIAMLoginURL != "" {
+		IamConf.WxIAMLoginURL = conf.WxIAMLoginURL
+	}
+	if conf.WxIAMLogoutURL != "" {
+		IamConf.WxIAMLogoutURL = conf.WxIAMLogoutURL
+	}
+	if conf.WxIAMClientID != "" {
+		IamConf.WxIAMClientID = conf.WxIAMClientID
+	}
+	if conf.WxIAMClientSecret != "" {
+		IamConf.WxIAMClientSecret = conf.WxIAMClientSecret
+	}
+	if conf.WxIAMKty != "" {
+		IamConf.WxIAMKty = conf.WxIAMKty
+	}
+	if conf.WxIAMKid != "" {
+		IamConf.WxIAMKid = conf.WxIAMKid
+	}
+	if conf.WxIAMAlg != "" {
+		IamConf.WxIAMAlg = conf.WxIAMAlg
+	}
+	if conf.WxIAMN != "" {
+		IamConf.WxIAMN = conf.WxIAMN
+	}
+	if conf.WxIAME != "" {
+		IamConf.WxIAME = conf.WxIAME
+	}
 }
 
 func setupEnv() {

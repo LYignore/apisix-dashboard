@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shiningrush/droplet"
 	"github.com/sony/sonyflake"
 	"github.com/yuin/gopher-lua/parse"
 )
@@ -205,4 +206,19 @@ func ValueEqual(a interface{}, b interface{}) bool {
 		return false
 	}
 	return bytes.Equal(aBytes, bBytes)
+}
+
+func GetSub(c droplet.Context, loginType string, idToken string, pubN string, pubE string) (string, error) {
+	tokenOk, token, err := ParseHStoken(c, idToken, loginType, pubN, pubE)
+	if !tokenOk {
+		return "", err
+	}
+
+	username, ok := token["sub"]
+	if ok {
+		sub := username.(string)
+		return sub, nil
+	} else {
+		return "", fmt.Errorf("get sub err")
+	}
 }

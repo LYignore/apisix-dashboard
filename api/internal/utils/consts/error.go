@@ -49,6 +49,12 @@ var (
 	ErrSSLCertificateResolution = errors.New("Certificate resolution failed")
 	// ErrorSSLKeyAndCert means the SSL key and SSL certificate don't match
 	ErrSSLKeyAndCert = errors.New("key and cert don't match")
+
+	ErrWxIAMLogin        = errors.New("WxIAM login request failed")
+	ErrWxIAMResponse     = errors.New("WxIAM login response failed")
+	ErrWxIAMServer       = errors.New("WxIAM server error")
+	ErrLoginNeedUserName = errors.New("username is needed")
+	ErrLoginNeedPassWord = errors.New("password is needed")
 )
 
 var (

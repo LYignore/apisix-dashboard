@@ -36,7 +36,7 @@ conf:
                           # It also support CIDR like 192.168.1.0/24 and 2001:0db8::/32
   etcd:
     endpoints:            # supports defining multiple etcd host addresses for an etcd cluster
-      - 127.0.0.1:2379
+      - 127.0.0.1:32298
                           # yamllint disable rule:comments-indentation
                           # etcd basic auth info
     # username: "root"    # ignore etcd username if not enable etcd auth
@@ -119,3 +119,14 @@ plugins:                          # plugin list (sorted in alphabetical order)
   - zipkin
   - server-info
   - traffic-split
+
+iamconf:
+  WxIAMLoginURL: http://192.168.12.253:8091/public/enduser/login
+  WxIAMLogoutURL: http://192.168.12.253:8091/api/enduser/logout
+  WxIAMClientID: b71668a8aaf246b39d4ddb8a5aef74f9
+  WxIAMClientSecret: E1AC55BC337B4E78A741E4BC8526D34E
+  WxIAMKty: RSA
+  WxIAMKid: 4875861
+  WxIAMAlg: RS256
+  WxIAMN: 1jmrPUboaLsbmVrTJ6eqiGHeYSvdfnAGtefAfgfoC4kXmA0X7Z0I-B1Srf15nuJuob4MVmFRx9qPMjfdT5tFnQ60DtYcrLQ0Ra6zIByRIv6fuHRtTBeXKStO63Th6qfiZTg4tPfgUe88t0LTWb72VfyEChlWI-bOCZHVIf3e8Uplkxnaa1hy4BRLHfeG5muM2c6KBQMA_AJZFvuhk4xO77l6aSg5_U8Yk6KbsMQtr89MNFZEk9TYhmFLTN_v0QItdmS_OMsK90IAUoUPSAVQhBl2Y_K4vRaIyenXoOU9Q1ujRb-WRDrk3v6xjBHnNLF3PwyzUu9yqsZkl09TZpmc8Q
+  WxIAME: AQAB

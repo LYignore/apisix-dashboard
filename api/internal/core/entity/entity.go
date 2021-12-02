@@ -213,6 +213,7 @@ func (upstream *Upstream) Parse2NameResponse() (*UpstreamNameResponse, error) {
 
 // swagger:model Consumer
 type Consumer struct {
+	BaseInfo
 	Username   string                 `json:"username"`
 	Desc       string                 `json:"desc,omitempty"`
 	Plugins    map[string]interface{} `json:"plugins,omitempty"`

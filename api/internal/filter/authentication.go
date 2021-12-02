@@ -28,9 +28,11 @@ import (
 
 	"github.com/apisix/manager-api/internal/conf"
 	"github.com/apisix/manager-api/internal/log"
+	"github.com/apisix/manager-api/internal/utils"
 )
 
 type AuthenticationMiddleware struct {
+	LoginUser string `auto_read:"LoginUser"`
 	middleware.BaseMiddleware
 }
 
@@ -45,7 +47,7 @@ func (mw *AuthenticationMiddleware) Handle(ctx droplet.Context) error {
 
 	req := httpReq.(*http.Request)
 
-	if req.URL.Path == "/apisix/admin/tool/version" || req.URL.Path == "/apisix/admin/user/login" {
+	if req.URL.Path == "/apisix/admin/tool/version" || req.URL.Path == "/apisix/admin/user/login" || req.URL.Path == "/apisix/admin/user/wxiamlogin" || req.URL.Path == "/apisix/admin/user/wxiamauth" {
 		return mw.BaseMiddleware.Handle(ctx)
 	}
 
@@ -55,45 +57,68 @@ func (mw *AuthenticationMiddleware) Handle(ctx droplet.Context) error {
 
 	// Need check the auth header
 	tokenStr := req.Header.Get("Authorization")
+	loginType := req.Header.Get("LoginType")
 
-	// verify token
-	token, err := jwt.ParseWithClaims(tokenStr, &jwt.StandardClaims{}, func(token *jwt.Token) (interface{}, error) {
-		return []byte(conf.AuthConf.Secret), nil
-	})
+	if loginType == "WxIAM" {
+		var pubN string
+		var pubE string
+		pubN = conf.IamConf.WxIAMN
+		pubE = conf.IamConf.WxIAME
+		tokenOk, Claims, err := utils.ParseHStoken(ctx, tokenStr, loginType, pubN, pubE)
+		if !tokenOk || Claims == nil || err != nil {
+			response := data.Response{Code: 010013, Message: "request unauthorized"}
+			log.Warnf("token validate failed: %s", err)
+			ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
+			return nil
+		}
 
-	// TODO: design the response error code
-	response := data.Response{Code: 010013, Message: "request unauthorized"}
+		username, ok := Claims["username"]
+		if ok {
+			ctx.Set("LoginUser", username)
+		} else {
+			ctx.Set("LoginUser", "")
+		}
+	} else {
+		// verify token
+		token, err := jwt.ParseWithClaims(tokenStr, &jwt.StandardClaims{}, func(token *jwt.Token) (interface{}, error) {
+			return []byte(conf.AuthConf.Secret), nil
+		})
 
-	if err != nil || token == nil || !token.Valid {
-		log.Warnf("token validate failed: %s", err)
-		log.Warn("please check the secret in conf.yaml")
-		ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
-		return nil
-	}
+		// TODO: design the response error code
+		response := data.Response{Code: 010013, Message: "request unauthorized"}
 
-	claims, ok := token.Claims.(*jwt.StandardClaims)
-	if !ok {
-		log.Warnf("token validate failed: %s, %v", err, token.Valid)
-		ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
-		return nil
-	}
+		if err != nil || token == nil || !token.Valid {
+			log.Warnf("token validate failed: %s", err)
+			log.Warn("please check the secret in conf.yaml")
+			ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
+			return nil
+		}
 
-	if err := token.Claims.Valid(); err != nil {
-		log.Warnf("token claims validate failed: %s", err)
-		ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
-		return nil
-	}
+		claims, ok := token.Claims.(*jwt.StandardClaims)
+		if !ok {
+			log.Warnf("token validate failed: %s, %v", err, token.Valid)
+			ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
+			return nil
+		}
 
-	if claims.Subject == "" {
-		log.Warn("token claims subject empty")
-		ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
-		return nil
-	}
+		if err := token.Claims.Valid(); err != nil {
+			log.Warnf("token claims validate failed: %s", err)
+			ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
+			return nil
+		}
 
-	if _, ok := conf.UserList[claims.Subject]; !ok {
-		log.Warnf("user not exists by token claims subject %s", claims.Subject)
-		ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
-		return nil
+		if claims.Subject == "" {
+			log.Warn("token claims subject empty")
+			ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
+			return nil
+		}
+
+		if _, ok := conf.UserList[claims.Subject]; !ok {
+			log.Warnf("user not exists by token claims subject %s", claims.Subject)
+			ctx.SetOutput(&data.SpecCodeResponse{StatusCode: http.StatusUnauthorized, Response: response})
+			return nil
+		}
+		ctx.Set("LoginUser", claims.Subject)
 	}
 
 	return mw.BaseMiddleware.Handle(ctx)

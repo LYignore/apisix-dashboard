@@ -17,9 +17,13 @@
 package consumer
 
 import (
+	"fmt"
+	"github.com/apisix/manager-api/internal/utils"
+	"github.com/apisix/manager-api/internal/utils/consts"
+	"github.com/shiningrush/droplet/data"
+	"net/http"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shiningrush/droplet"
@@ -64,6 +68,10 @@ func (h *Handler) Get(c droplet.Context) (interface{}, error) {
 	r, err := h.consumerStore.Get(c.Context(), input.Username)
 	if err != nil {
 		return handler.SpecCodeResponse(err), err
+	}
+	loginUser := c.Get("LoginUser")
+	if err := ValidateCreator(loginUser.(string), r.(*entity.Consumer)); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
 	}
 	return r, nil
 }
@@ -110,23 +118,24 @@ type ListInput struct {
 func (h *Handler) List(c droplet.Context) (interface{}, error) {
 	input := c.Input().(*ListInput)
 
+	//validate Creator
+	loginUser := c.Get("LoginUser")
+	creatorLabel := "API_CREATOR:" + loginUser.(string)
+	creatorLabelMap, err := utils.GenLabelMap(creatorLabel)
+	if err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest},
+			fmt.Errorf("%s: \"%s\"", err.Error(), creatorLabel)
+	}
+
 	ret, err := h.consumerStore.List(c.Context(), store.ListInput{
 		Predicate: func(obj interface{}) bool {
 			if input.Username != "" {
 				return strings.Contains(obj.(*entity.Consumer).Username, input.Username)
 			}
+			if loginUser.(string) != "admin" && !utils.LabelContains(obj.(*entity.Consumer).Labels, creatorLabelMap) {
+				return false
+			}
 			return true
-		},
-		Less: func(i, j interface{}) bool {
-			iBase := i.(*entity.Consumer)
-			jBase := j.(*entity.Consumer)
-			if iBase.CreateTime != jBase.CreateTime {
-				return iBase.CreateTime < jBase.CreateTime
-			}
-			if iBase.UpdateTime != jBase.UpdateTime {
-				return iBase.UpdateTime < jBase.UpdateTime
-			}
-			return iBase.Username < jBase.Username
 		},
 		PageSize:   input.PageSize,
 		PageNumber: input.PageNumber,
@@ -145,20 +154,53 @@ type SetInput struct {
 
 func (h *Handler) Set(c droplet.Context) (interface{}, error) {
 	input := c.Input().(*SetInput)
+	//input := c.Input().(*entity.Consumer)
+	loginUser := c.Get("LoginUser")
+
+	if input.ID != nil && utils.InterfaceToString(input.ID) != input.Username {
+		return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest},
+			consts.ErrIDUsername
+	}
+
+	if input.Consumer.Labels == nil {
+		input.Consumer.Labels = map[string]string{}
+	}
+
 	if input.Username != "" {
 		input.Consumer.Username = input.Username
-	}
-	ensurePluginsDefValue(input.Plugins)
+		// Validate Creator
+		consumer, err := h.consumerStore.Get(c.Context(), input.Username)
+		if err != nil {
+			return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest}, err
+		}
 
-	// Because the ID of consumer has been removed,
-	// `BaseInfo` is no longer embedded in consumer's struct,
-	// So we need to maintain create_time and update_time separately for consumer
-	savedConsumer, _ := h.consumerStore.Get(c.Context(), input.Consumer.Username)
-	input.Consumer.CreateTime = time.Now().Unix()
-	input.Consumer.UpdateTime = time.Now().Unix()
-	if savedConsumer != nil {
-		input.Consumer.CreateTime = savedConsumer.(*entity.Consumer).CreateTime
+		if err := ValidateCreator(loginUser.(string), consumer.(*entity.Consumer)); err != nil {
+			return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+		}
+
+		r, err := h.consumerStore.Get(c.Context(), input.Consumer.Username)
+		if err != nil {
+			return handler.SpecCodeResponse(err), err
+		}
+
+		_consumer := r.(*entity.Consumer)
+		label, ok := _consumer.Labels["API_CREATOR"]
+		if ok {
+			if loginUser != "admin" {
+				input.Consumer.Labels["API_CREATOR"] = loginUser.(string)
+			} else if loginUser == "admin" {
+				input.Consumer.Labels["API_CREATOR"] = label
+			}
+		} else {
+			input.Consumer.Labels["API_CREATOR"] = loginUser.(string)
+		}
+	} else {
+		// add Creator
+		input.Consumer.Labels["API_CREATOR"] = loginUser.(string)
 	}
+
+	input.Consumer.ID = input.Consumer.Username
+	ensurePluginsDefValue(input.Plugins)
 
 	ret, err := h.consumerStore.Update(c.Context(), &input.Consumer, true)
 	if err != nil {
@@ -184,9 +226,28 @@ type BatchDeleteInput struct {
 func (h *Handler) BatchDelete(c droplet.Context) (interface{}, error) {
 	input := c.Input().(*BatchDeleteInput)
 
+	loginUser := c.Get("LoginUser")
+	consumer, err := h.consumerStore.Get(c.Context(), input.UserNames)
+	if err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusBadRequest}, err
+	}
+
+	if err := ValidateCreator(loginUser.(string), consumer.(*entity.Consumer)); err != nil {
+		return &data.SpecCodeResponse{StatusCode: http.StatusForbidden}, err
+	}
+
 	if err := h.consumerStore.BatchDelete(c.Context(), strings.Split(input.UserNames, ",")); err != nil {
 		return handler.SpecCodeResponse(err), err
 	}
 
 	return nil, nil
+}
+
+// validate: loginuser match with creator
+func ValidateCreator(loginUser string, consumer *entity.Consumer) error {
+	creator, _ := consumer.Labels["API_CREATOR"]
+	if loginUser != "admin" && loginUser != creator {
+		return fmt.Errorf("Permission denied: \"API_CREATOR:%s\" not match with login user %s", creator, loginUser)
+	}
+	return nil
 }
